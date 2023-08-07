@@ -7,7 +7,7 @@ IMG_ROOTFS_TYPE = "ext4"
 IMG_ROOTFS = "${IMGDEPLOYDIR}/${IMAGE_BASENAME}-${MACHINE}.${IMG_ROOTFS_TYPE}"
 
 # This image depends on the rootfs image
-IMAGE_TYPEDEP:rk3328-gpt-img = "${IMG_ROOTFS_TYPE}"
+IMAGE_TYPEDEP:rockchip-radxa-gpt-img = "${IMG_ROOTFS_TYPE}"
 
 GPTIMG = "${IMAGE_BASENAME}-${MACHINE}-gpt.img"
 BOOT_IMG = "${IMAGE_BASENAME}-${MACHINE}-boot.img"
@@ -22,8 +22,9 @@ BL31_ELF = "radxa-binary/bl31.elf"
 TRUST_IMG = "trust.img"
 # Not from radxa-binary
 UBOOT_IMG = "u-boot.img"
+UBOOT_ITB = "u-boot.itb"
 
-GPTIMG_APPEND:rk3328 = "console=tty1 console=ttyS2,1500000n8 rw \
+GPTIMG_APPEND:rk3399 = "console=tty1 console=ttyFIQ0,1500000n8 rw \
 	root=PARTUUID=b921b045-1d rootfstype=ext4 init=/sbin/init rootwait"
 
 # default partitions [in Sectors]
@@ -36,11 +37,11 @@ ATF_SIZE = "8192"
 BOOT_SIZE = "229376"
 
 # WORKROUND: miss recipeinfo
-do_image_rk3328_gpt_img[depends] += " \
+do_image_rockchip_radxa_gpt_img[depends] += " \
 	radxa-binary-native:do_populate_lic \
 	virtual/bootloader:do_populate_lic"
 
-do_image_rk3328_gpt_img[depends] += " \
+do_image_rockchip_radxa_gpt_img[depends] += " \
 	parted-native:do_populate_sysroot \
 	mtools-native:do_populate_sysroot \
 	gptfdisk-native:do_populate_sysroot \
@@ -50,9 +51,9 @@ do_image_rk3328_gpt_img[depends] += " \
 	virtual/kernel:do_deploy \
 	virtual/bootloader:do_deploy"
 
-PER_CHIP_IMG_GENERATION_COMMAND:rk3328 = "generate_rk3328_loader_image"
+PER_CHIP_IMG_GENERATION_COMMAND:rk3399 = "generate_rk3399_loader_image"
 
-IMAGE_CMD:rk3328-gpt-img () {
+IMAGE_CMD:rockchip-radxa-gpt-img () {
 	# Change to image directory
 	cd ${DEPLOY_DIR_IMAGE}
 
@@ -82,7 +83,7 @@ create_rk_image () {
 	GPT_IMAGE_SIZE=$(expr $GPTIMG_MIN_SIZE \/ 1024 \/ 1024 + 2)
 
 	# Initialize sdcard image file
-	dd if=/dev/zero of=${GPTIMG} bs=1M count=0 seek=6144
+	dd if=/dev/zero of=${GPTIMG} bs=1M count=0 seek=$GPT_IMAGE_SIZE
 
 	# Create partition table
 	parted -s ${GPTIMG} mklabel gpt
@@ -96,18 +97,44 @@ create_rk_image () {
 	BOOT_START=$(expr ${ATF_START} + ${ATF_SIZE})
 	ROOTFS_START=$(expr ${BOOT_START} + ${BOOT_SIZE})
 
-	parted -s ${GPTIMG} unit s mkpart loader1 64 8063
-	parted -s ${GPTIMG} unit s mkpart loader2 16384 24575
-	parted -s ${GPTIMG} unit s mkpart trust 24576 32767
+ 	# Make 5 partitions only for rocki-4b 
+	if [ "${SOC_FAMILY}" = "rk3399" ]; then
+
+		parted -s ${GPTIMG} unit s mkpart loader1 ${LOADER1_START} $(expr ${RESERVED1_START} - 1)
+		# parted -s ${GPTIMG} unit s mkpart reserved1 ${RESERVED1_START} $(expr ${RESERVED2_START} - 1)
+		# parted -s ${GPTIMG} unit s mkpart reserved2 ${RESERVED2_START} $(expr ${LOADER2_START} - 1)
+		parted -s ${GPTIMG} unit s mkpart loader2 ${LOADER2_START} $(expr ${ATF_START} - 1)
+		parted -s ${GPTIMG} unit s mkpart trust ${ATF_START} $(expr ${BOOT_START} - 1)	
+		BOOT_PART=4
+		ROOT_PART=5
+	else
+		BOOT_PART=1
+		ROOT_PART=2
+	fi
 
 	# Create boot partition and mark it as bootable
-	parted -s ${GPTIMG} unit s mkpart boot 32768 1081343
-	parted -s ${GPTIMG} set 4 boot on
+	parted -s ${GPTIMG} unit s mkpart boot ${BOOT_START} $(expr ${ROOTFS_START} - 1)
+	parted -s ${GPTIMG} set ${BOOT_PART} boot on
 
 	# Create rootfs partition
-	parted -s ${GPTIMG} -- unit s mkpart rootfs 1081344 -34s
+	parted -s ${GPTIMG} -- unit s mkpart rootfs ${ROOTFS_START} -34s
 
 	parted ${GPTIMG} print
+
+	# mark the boot partition as UEFI boot
+	BOOT_UUID="C12A7328-F81F-11D2-BA4B-00A0C93EC93B"
+
+	# Change boot partuuid
+	gdisk ${GPTIMG} <<EOF
+x
+c
+${BOOT_PART}
+${BOOT_UUID}
+w
+y
+EOF
+
+	# the root partition is always this, because aarch64
 
 	ROOT_UUID="B921B045-1DF0-41C3-AF44-4C6F280D3FAE"
 
@@ -115,7 +142,7 @@ create_rk_image () {
 	gdisk ${GPTIMG} <<EOF
 x
 c
-5
+${ROOT_PART}
 ${ROOT_UUID}
 w
 y
@@ -124,27 +151,50 @@ EOF
 	# Delete the boot image to avoid trouble with the build cache
 	rm -f ${WORKDIR}/${BOOT_IMG}
 	# Create boot partition image
-	BOOT_BLOCKS=$(LC_ALL=C parted -s ${GPTIMG} unit b print | awk '/ 4 / { print substr($4, 1, length($4 -1)) / 512 /2 }')
+	BOOT_BLOCKS=$(LC_ALL=C parted -s ${GPTIMG} unit b print | awk "/ ${BOOT_PART} / { print substr(\$4, 1, length(\$4 -1)) / 512 /2 }")
 	BOOT_BLOCKS=$(expr $BOOT_BLOCKS / 63 \* 63)
 
-	mkfs.vfat -n "boot" -S 512 -C ${WORKDIR}/${BOOT_IMG} 1024100
+	mkfs.vfat -n "boot" -S 512 -C ${WORKDIR}/${BOOT_IMG} $BOOT_BLOCKS
 	mcopy -i ${WORKDIR}/${BOOT_IMG} -s ${DEPLOY_DIR_IMAGE}/${KERNEL_IMAGETYPE}-${MACHINE}.bin ::${KERNEL_IMAGETYPE}
 	DTB_NAME=""
 	DTB_NAME=$(echo "${KERNEL_DEVICETREE}" | cut -d '/' -f 2)
 
 	mcopy -i ${WORKDIR}/${BOOT_IMG} -s ${DEPLOY_DIR_IMAGE}/${DTB_NAME} ::${DTB_NAME}
 
+	# Create extlinux config file
+	cat >${WORKDIR}/extlinux.conf <<EOF
+default Yocto
+
+label Yocto
+	kernel /${KERNEL_IMAGETYPE}
+	devicetree /${DTB_NAME}
+	append ${GPTIMG_APPEND}
+EOF
+
 	mmd -i ${WORKDIR}/${BOOT_IMG} ::/extlinux
-	mcopy -i ${WORKDIR}/${BOOT_IMG} -s ~/build-yocto-xfce/rk3328/patches/rk3328.conf ::/extlinux/extlinux.conf
+	mcopy -i ${WORKDIR}/${BOOT_IMG} -s ${WORKDIR}/extlinux.conf ::/extlinux/
+	if [ -d ${DEPLOY_DIR_IMAGE}/overlays ]; then
+		mmd -i ${WORKDIR}/${BOOT_IMG} ::/overlays
+		mcopy -i ${WORKDIR}/${BOOT_IMG} -s ${DEPLOY_DIR_IMAGE}/overlays/* ::/overlays/
+	fi
+	if [ -e ${DEPLOY_DIR_IMAGE}/hw_intfc.conf ]; then
+		mcopy -i ${WORKDIR}/${BOOT_IMG} -s ${DEPLOY_DIR_IMAGE}/hw_intfc.conf ::/
+	fi
+	if [ -e ${DEPLOY_DIR_IMAGE}/uEnv.txt ]; then
+		mcopy -i ${WORKDIR}/${BOOT_IMG} -s ${DEPLOY_DIR_IMAGE}/uEnv.txt ::/
+		mcopy -i ${WORKDIR}/${BOOT_IMG} -s ${DEPLOY_DIR_IMAGE}/boot.scr ::/
+		mcopy -i ${WORKDIR}/${BOOT_IMG} -s ${DEPLOY_DIR_IMAGE}/boot.cmd ::/
+	fi
+
 	# Burn Boot Partition
-	dd if=${WORKDIR}/${BOOT_IMG} of=${GPTIMG} conv=notrunc,fsync seek=32768
+	dd if=${WORKDIR}/${BOOT_IMG} of=${GPTIMG} conv=notrunc,fsync seek=${BOOT_START}
 
 	# Burn Rootfs Partition
-	dd if=${IMG_ROOTFS} of=${GPTIMG} conv=notrunc,fsync seek=1081344
+	dd if=${IMG_ROOTFS} of=${GPTIMG} conv=notrunc,fsync seek=${ROOTFS_START}
 
 }
 
-generate_rk3328_loader_image () {
+generate_rk3399_loader_image () {
 	LOADER1_START=64
 	RESERVED1_START=$(expr ${LOADER1_START} + ${LOADER1_SIZE})
 	RESERVED2_START=$(expr ${RESERVED1_START} + ${RESERVED1_SIZE})
@@ -161,7 +211,7 @@ generate_rk3328_loader_image () {
 	cat >${DEPLOY_DIR_IMAGE}/trust.ini <<EOF
 [VERSION]
 MAJOR=1
-MINOR=2
+MINOR=0
 [BL30_OPTION]
 SEC=0
 [BL31_OPTION]
@@ -178,7 +228,7 @@ EOF
 
 	trust_merger --size 1024 1 ${DEPLOY_DIR_IMAGE}/trust.ini
 
-	dd if=${DEPLOY_DIR_IMAGE}/${IDBLOADER} of=${GPTIMG} conv=notrunc,fsync seek=64
-	dd if=${DEPLOY_DIR_IMAGE}/${UBOOT_IMG} of=${GPTIMG} conv=notrunc,fsync seek=16384
-	dd if=${DEPLOY_DIR_IMAGE}/${TRUST_IMG} of=${GPTIMG} conv=notrunc,fsync seek=24576
+	dd if=${DEPLOY_DIR_IMAGE}/${IDBLOADER} of=${GPTIMG} conv=notrunc,fsync seek=${LOADER1_START}
+	dd if=${DEPLOY_DIR_IMAGE}/${UBOOT_IMG} of=${GPTIMG} conv=notrunc,fsync seek=${LOADER2_START}
+	dd if=${DEPLOY_DIR_IMAGE}/${TRUST_IMG} of=${GPTIMG} conv=notrunc,fsync seek=${ATF_START}
 }

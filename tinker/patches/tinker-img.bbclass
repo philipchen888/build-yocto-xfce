@@ -9,21 +9,14 @@ IMG_ROOTFS_TYPE = "ext4"
 IMG_ROOTFS = "${IMGDEPLOYDIR}/${IMAGE_BASENAME}-${MACHINE}.${IMG_ROOTFS_TYPE}"
 
 # This image depends on the rootfs image
-IMAGE_TYPEDEP_tinker-img = "${IMG_ROOTFS_TYPE}"
+IMAGE_TYPEDEP:tinker-img = "${IMG_ROOTFS_TYPE}"
 
 GPTIMG = "${IMAGE_BASENAME}-${MACHINE}-gpt.img"
 BOOT_IMG = "${IMAGE_BASENAME}-${MACHINE}-boot.img"
 IDBLOADER = "idbloader.img"
 
-# Get From rk-binary loader
-# DDR_BIN = "rk-binary/ddr.bin"
-# LOADER_BIN = "rk-binary/loader.bin"
-# MINILOADER_BIN = "rk-binary/miniloader.bin"
-# Not from rk-binary
 UBOOT_IMG = "u-boot.img"
 
-# default partitions [in Sectors]
-# More info at http://rockchip.wikidot.com/partitions
 LOADER1_SIZE = "8128"
 BOOT_SIZE = "131072"
 
@@ -35,9 +28,9 @@ do_image_tinker_img[depends] += " \
 	dosfstools-native:do_populate_sysroot \
 	virtual/kernel:do_deploy"
 
-PER_CHIP_IMG_GENERATION_COMMAND_rk3288 = "generate_loader1_image"
+PER_CHIP_IMG_GENERATION_COMMAND:rk3288 = "generate_loader1_image"
 
-IMAGE_CMD_tinker-img () {
+IMAGE_CMD:tinker-img () {
 	# Change to image directory
 	cd ${DEPLOY_DIR_IMAGE}
 

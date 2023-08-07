@@ -1,6 +1,6 @@
 SUMMARY = "Basic desktop image"
 
-IMAGE_FEATURES += "splash package-management ssh-server-openssh hwcodecs x11"
+IMAGE_FEATURES:append = " splash package-management ssh-server-openssh hwcodecs x11"
 
 LICENSE = "MIT"
 
